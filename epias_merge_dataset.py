@@ -78,7 +78,26 @@ usd_data.columns = ['Tarih', 'Dolar_Kuru']
 usd_data['Tarih'] = pd.to_datetime(usd_data['Tarih']).dt.normalize()
 usd_data['Tarih'] = usd_data['Tarih'].dt.tz_localize(None)
 
+#---------------------------
+# BOTAS Veri Ekleme
+#---------------------------
 
+# Kıyaslama yapacağımız sınır tarihi belirliyoruz
+sinir_tarih = pd.Timestamp('2025-07-01')
+
+# 2. ADIM: List Comprehension ile yeni değişkeni oluşturma
+# Mantık: [ (Koşul sağlanırsa değer) if (koşul) else (sağlanmazsa değer) for x in (sütun) ]
+
+df_final['dogalgaz_fiyatlari_Mwh'] = [
+    1127.82 if tarih <= sinir_tarih else 1409.77  # 1500 yerine sonraki tarihlerin fiyatını yazmalısın
+    for tarih in df_final['Tarih']
+]
+
+print(df_final)
+# CHECK
+df_final[df_final['Tarih'] == '2025-08-20']['dogalgaz_fiyatlari_Mwh'].values[0]
+df_final[df_final['Tarih'] == '2025-05-20']['dogalgaz_fiyatlari_Mwh'].values[0]
+df_final["Tarih"]
 
 # Datelerdeki boşluk dolar değerlerini doldurduk
 all_dates = pd.DataFrame({'Tarih': pd.date_range(start=start_date, end=end_date, freq='D')})
@@ -90,6 +109,9 @@ usd_data['Dolar_Kuru'] = usd_data['Dolar_Kuru'].ffill().bfill()
 
 # Ana veriye ekle
 df_final = pd.merge(df_final, usd_data, on='Tarih', how='left')
+
+
+
 
 #---------------------------
 # Gereksiz Değişkenleri Veri Setinden Atma
@@ -108,3 +130,4 @@ if existing_drop:
 # KAYIT
 #---------------------------
 df_final.to_csv('EPIAS_.csv', index=False)
+df_final.head()

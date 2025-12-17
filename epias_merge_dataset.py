@@ -22,7 +22,7 @@ pd.set_option('display.float_format', lambda x: '%.3f' % x)
 # ---------------------------
 # VERİ OKUMA
 # ---------------------------
-df_final = pd.read_excel("data_s/güncel_set.xlsx")
+df_final = pd.read_csv("data_s/güncel_set.csv")
 df_final.head(20)
 # ---------------------------
 # DEĞİŞKEN TİPİ DÜZELTME
@@ -39,7 +39,8 @@ for col in object_to_float:
 # ---------------------------
 # TARİH NORMALİZE (EN KRİTİK KISIM)
 # ---------------------------
-df_final['Tarih'] = pd.to_datetime(df_final['Tarih']).dt.normalize()
+# Formatı açıkça belirt (En sağlam ve hızlı yöntem budur)
+df_final['Tarih'] = pd.to_datetime(df_final['Tarih'], format='%d.%m.%Y').dt.normalize()
 
 # ---------------------------
 # DOLAR KURU (YAHOO)

@@ -22,7 +22,7 @@ pd.set_option('display.float_format', lambda x: '%.3f' % x)
 # ---------------------------
 # VERİ OKUMA
 # ---------------------------
-df_final = pd.read_excel("data_s/güncel_set.xlsx")
+df_final = pd.read_csv("data_s/güncel_set.csv")
 df_final.head(20)
 # ---------------------------
 # DEĞİŞKEN TİPİ DÜZELTME

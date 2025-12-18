@@ -642,3 +642,140 @@ axes[1].set_title('Aylık PTF Dağılımı')
 
 plt.tight_layout()
 plt.show()
+
+# =============================================================================
+# -----------------------------------------------------------------------------
+# ADIM 5: FEATURE ENGINEERING (ÖZELLİK MÜHENDİSLİĞİ) & SHIFT
+# -----------------------------------------------------------------------------
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. SHIFT OPERASYONU (Hayati Önem Taşıyor!)
+
+# -----------------------------------------------------------------------------
+# Ötelenecek Üretim Verileri (Gerçekleşen oldukları için)
+future_cols = ['Doğalgaz', 'Rüzgar', 'Güneş', 'Barajlı', 'Linyit',
+               'İthal Kömür', 'Akarsu', 'Fuel Oil', 'Jeotermal', 'Biyokütle']
+
+# Veri setinde hangileri varsa onları seçelim
+cols_to_shift = [c for c in future_cols if c in df_final.columns]
+
+print(f"⏳ Shift İşlemi: {len(cols_to_shift)} adet üretim değişkeni 24 saat ötelenecek...")
+
+for col in cols_to_shift:
+    # Mantık: Bugünün tahmini için DÜNÜN üretimini kullan.
+    df_final[f'{col}_Lag24'] = df_final[col].shift(24)
+
+    # Orijinal (Gelecek) sütunu sil ki model kopya çekmesin.
+    df_final.drop(columns=[col], inplace=True)
+
+print("✅ Shift tamamlandı. Model artık dürüst çalışacak.")
+
+# -----------------------------------------------------------------------------
+# 2. TARİH VE SAAT DÖNÜŞÜMLERİ (GÜNCELLENDİ)
+# Neden: Saat 23->00 ve Pazar->Pazartesi geçişlerini modele öğretmek.
+# -----------------------------------------------------------------------------
+# Ay ve Gün Bilgisi
+df_final['Month'] = df_final['Tarih'].dt.month
+df_final['Day_of_Week'] = df_final['Tarih'].dt.dayofweek
+df_final['Is_Weekend'] = df_final['Day_of_Week'].isin([5, 6]).astype(int)
+
+# --- SAAT DÖNÜŞÜMÜ (Zaten Vardı) ---
+if df_final['Saat'].dtype == 'O':
+    df_final['Saat_Int'] = df_final['Saat'].astype(str).str.split(':').str[0].astype(int)
+else:
+    df_final['Saat_Int'] = df_final['Saat']
+
+df_final['Hour_Sin'] = np.sin(2 * np.pi * df_final['Saat_Int'] / 24)
+df_final['Hour_Cos'] = np.cos(2 * np.pi * df_final['Saat_Int'] / 24)
+
+# --- GÜN DÖNÜŞÜMÜ  ---
+
+df_final['Day_Sin'] = np.sin(2 * np.pi * df_final['Day_of_Week'] / 7)
+df_final['Day_Cos'] = np.cos(2 * np.pi * df_final['Day_of_Week'] / 7)
+
+
+# -----------------------------------------------------------------------------
+# 3. FİYAT HAFIZASI (LAG FEATURES)
+# Neden: ACF Analizinde gördük, fiyat geçmişten etkilenmektedir.
+# -----------------------------------------------------------------------------
+target_col = 'PTF (TL/MWH)'
+
+# Dün aynı saatte fiyat neydi? (Modelin en büyük yardımcısı budur)
+df_final['PTF_Lag_24'] = df_final[target_col].shift(24)
+
+# Geçen hafta aynı saatte fiyat neydi? (Haftalık döngüyü yakalar)
+df_final['PTF_Lag_168'] = df_final[target_col].shift(168)
+
+# Son 24 saatin ortalaması (Trend var mı?)
+df_final['PTF_Roll_Mean_24'] = df_final[target_col].rolling(24).mean()
+
+
+# -----------------------------------------------------------------------------
+# 4. SNIPER ÖZELLİKLER (Overfitting Önleyici Akıllı Rasyolar)
+# Neden: Kanıtladığımız en güçlü değişkenler.
+# -----------------------------------------------------------------------------
+print("🎯 Sniper Değişkenler Hesaplanıyor...")
+
+# A. RELATIVE PRICE POSITION (En Güçlüsü)
+# Fiyatın tarihsel ortalamasına göre konumu. Enflasyondan etkilenmez.
+# Haftalık ortalamayı baz alıyoruz (168 saat).
+df_final['PTF_Roll_Mean_168'] = df_final[target_col].rolling(168).mean()
+# 0'a bölme hatası olmasın diye paydaya +1
+df_final['Relative_Price_Pos'] = (df_final['PTF_Lag_24'] - df_final['PTF_Roll_Mean_168']) / (df_final['PTF_Roll_Mean_168'] + 1)
+
+# B. NET YÜK (NET LOAD)
+# Toplam Yükten Yenilenebilir Enerjiyi Çıkar -> Termikçilere kalan yük.
+# Önce yenilenebilirleri topla (Shift edilmiş olanları!)
+ren_cols = ['Rüzgar_Lag24', 'Güneş_Lag24', 'Akarsu_Lag24', 'Jeotermal_Lag24', 'Biyokütle_Lag24']
+existing_ren = [c for c in ren_cols if c in df_final.columns]
+df_final['Total_Renewable_Lag24'] = df_final[existing_ren].sum(axis=1)
+
+load_col = 'Yük Tahmin Planı (MWh)'
+if load_col in df_final.columns:
+    df_final['Net_Load'] = df_final[load_col] - df_final['Total_Renewable_Lag24']
+else:
+    # Yük yoksa negatif üretim olarak al
+    df_final['Net_Load'] = -df_final['Total_Renewable_Lag24']
+
+# C. THERMAL STRESS RATIO (Termik Stres)
+# (Gaz + Kömür) / Toplam Yük. Sistem ne kadar zorda?
+therm_cols = ['Doğalgaz_Lag24', 'İthal Kömür_Lag24', 'Linyit_Lag24', 'Fuel Oil_Lag24']
+existing_therm = [c for c in therm_cols if c in df_final.columns]
+df_final['Total_Thermal_Lag24'] = df_final[existing_therm].sum(axis=1)
+
+if load_col in df_final.columns:
+    df_final['Thermal_Stress'] = df_final['Total_Thermal_Lag24'] / (df_final[load_col] + 1)
+else:
+    df_final['Thermal_Stress'] = 0
+
+# D. PRICE MOMENTUM
+# Haftalık değişim trendi (Artıyor mu azalıyor mu?)
+df_final['Price_Momentum'] = df_final['PTF_Lag_24'] - df_final['PTF_Lag_168']
+
+# E. VOLATILITY (Korku Endeksi)
+# Son 24 saatteki fiyat oynaklığı (Standart Sapma).
+# Bugünü görmemesi için shift(24) yapıyoruz.
+df_final['Volatility'] = df_final[target_col].rolling(24).std().shift(24)
+
+
+# -----------------------------------------------------------------------------
+# 5. SON TEMİZLİK VE HAZIRLIK
+# -----------------------------------------------------------------------------
+# Shift ve Rolling(168) yaptığımız için ilk 1 hafta (168 satır) boşaldı.
+# Onları siliyoruz.
+print(f"🧹 Temizlik Öncesi Satır: {len(df_final)}")
+df_final.dropna(inplace=True)
+print(f"✅ Temizlik Sonrası Satır: {len(df_final)} (Modele Hazır)")
+
+# Gereksiz sütunları (Modelin anlamadığı stringleri) atalım
+# Tarih ve Saat'i modelden çıkarıyoruz ama grafik için saklayacağız (df_final'da kalsın).
+model_cols = [c for c in df_final.columns if c not in ['Tarih', 'Saat', 'Zaman', 'Saat_Int']]
+
+print(f"🧠 Modele Girecek Değişken Sayısı: {len(model_cols)}")
+print(f"   Sniper'lar Dahil: Relative_Price_Pos, Net_Load, Thermal_Stress...")
+
+
+
+
+

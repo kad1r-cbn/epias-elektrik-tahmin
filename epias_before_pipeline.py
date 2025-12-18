@@ -16,6 +16,11 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 import pandas as pd
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import xgboost as xgb
+import numpy as np
+import pandas as pd
 
 # ---------------------------
 # AYARLAR
@@ -953,14 +958,184 @@ X = df_final.drop(columns=existing_drop_cols)
 # y Vektörü (Çıktı / Hedef)
 y = df_final[target_col]
 
+# Tarihleri Görselleştirme İçin Sakla (Senin Kodun - Dinamik Hali)
+dates = df_final['Tarih']
+
 print(f"🚫 Drop Edilen Sütunlar: {existing_drop_cols}")
 print(f"✅ X Matrisi Boyutu: {X.shape}")
 print(f"🎯 y Matrisi Boyutu: {y.shape}")
 
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 2. ZAMAN SERİSİ BÖLÜMLEME (TRAIN / TEST SPLIT) - TARİH BAZLI
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Strateji: Kesin tarih aralıklarına göre eğitim ve test setlerini ayırıyoruz.
+# Train: 01.01.2024 - 31.10.2025 (Öğrenme Dönemi)
+# Test:  01.11.2025 - 30.11.2025 (Sınav Dönemi - Sadece Kasım Ayı)
+
+# Tarih sınırlarını tanımlayalım (Pandas kıyaslaması için YYYY-MM-DD formatı en iyisidir)
+train_end_date = '2025-10-31'
+test_start_date = '2025-11-01'
+test_end_date = '2025-11-30'
+
+# Maskeleme (Filtreleme) Oluşturma
+# X ve y matrislerinde 'Tarih' sütunu olmadığı için, dışarıdaki 'dates' değişkenini referans alıyoruz.
+train_mask = (dates >= '2024-01-01') & (dates <= train_end_date)
+test_mask  = (dates >= test_start_date) & (dates <= test_end_date)
+
+# Veriyi Bölme (.loc kullanarak)
+X_train = X.loc[train_mask]
+X_test  = X.loc[test_mask]
+
+y_train = y.loc[train_mask]
+y_test  = y.loc[test_mask]
+
+# Tarihleri de ayıralım (Grafik ve analizler için lazım olacak)
+dates_train = dates.loc[train_mask]
+dates_test  = dates.loc[test_mask]
+
+# KONTROL (İstediğin net tarih aralıklarını teyit edelim)
+print("-" * 50)
+print(f"📉 Eğitim Seti (Train): {len(X_train)} satır")
+print(f"   Aralık: {dates_train.min().date()}  --->  {dates_train.max().date()}")
+print("-" * 50)
+print(f"📈 Test Seti (Test):    {len(X_test)} satır")
+print(f"   Aralık: {dates_test.min().date()}  --->  {dates_test.max().date()}")
+print("-" * 50)
+
+# Güvenlik Kontrolü: Test seti boş mu? (Tarih formatı hatası varsa uyarması için)
+if len(X_test) == 0:
+    raise ValueError("⚠️ HATA: Test seti boş geldi! Tarih formatlarını veya veri aralığını kontrol et.")
+
+# -----------------------------------------------------------------------------
+# 3. REFERANS NOKTASI (BENCHMARK - NAIVE FORECAST)
+# -----------------------------------------------------------------------------
+# "Yarınki fiyat, bugünkü fiyattır" (veya Lag 168 - geçen haftadır)
+# Biz Lag_24 (Dünkü fiyat) üzerinden Naive Forecast yapalım.
+# Test setindeki 'PTF_Lag_24' sütununu tahmin olarak kabul ediyoruz.
+
+if 'PTF_Lag_24' in X_test.columns:
+    naive_pred = X_test['PTF_Lag_24']
+    naive_rmse = np.sqrt(mean_squared_error(y_test, naive_pred))
+    naive_mae = mean_absolute_error(y_test, naive_pred)
+
+    print(f"🛑 Benchmark (Naive) RMSE: {naive_rmse:.2f} TL")
+    print(f"🛑 Benchmark (Naive) MAE:  {naive_mae:.2f} TL")
+    print("   -> Hedefimiz bu hataların altına düşmek!")
+else:
+    print("⚠️ PTF_Lag_24 bulunamadı, Benchmark atlanıyor.")
+
+
+# -----------------------------------------------------------------------------
+# 4. HİPERPARAMETRE OPTİMİZASYONU (TUNING) - RandomizedSearch
+# -----------------------------------------------------------------------------
+print("\n⚙️ Hiperparametre Optimizasyonu Başlıyor... (Bu biraz sürebilir)")
+
+# Parametre Uzayı (Arama Yapılacak Ayarlar)
+param_dist = {
+    'n_estimators': [500, 1000, 1500],        # Ağaç sayısı
+    'learning_rate': [0.01, 0.05, 0.1],       # Öğrenme hızı (Küçük olması iyidir ama yavaştır)
+    'max_depth': [3, 5, 7, 9],                # Ağaç derinliği (Çok derin = Overfitting riski)
+    'subsample': [0.7, 0.8, 0.9],             # Her ağaç için verinin ne kadarını kullansın
+    'colsample_bytree': [0.7, 0.8, 0.9],      # Her ağaç için sütunların ne kadarını kullansın
+    'objective': ['reg:squarederror']         # Regresyon görevi
+}
+
+# Base Model
+xgb_model = xgb.XGBRegressor(random_state=42, n_jobs=-1) # n_jobs=-1 tüm işlemciyi kullanır
+
+# Zaman Serisi Cross-Validation (Shuffle yok!)
+tscv = TimeSeriesSplit(n_splits=3)
+
+# Randomized Search (Grid Search'ten daha hızlıdır)
+random_search = RandomizedSearchCV(
+    estimator=xgb_model,
+    param_distributions=param_dist,
+    n_iter=10,  # 10 farklı kombinasyon dene (Hız için düşük tuttuk, artırabilirsin)
+    scoring='neg_root_mean_squared_error',
+    cv=tscv,
+    verbose=1,
+    random_state=42,
+    n_jobs=-1
+)
+
+# Aramayı Başlat (Sadece Train seti üzerinde!)
+random_search.fit(X_train, y_train)
+
+print(f"\n🏆 En İyi Parametreler: {random_search.best_params_}")
 
 
 
+# -----------------------------------------------------------------------------
+# 5. FİNAL MODELİN EĞİTİLMESİ (BEST MODEL)
+# -----------------------------------------------------------------------------
+print("\n🦾 Final Model Eğitiliyor...")
+
+# En iyi parametrelerle modeli al
+best_model = random_search.best_estimator_
+
+# Modeli tekrar eğit (Opsiyonel: Early Stopping ile)
+# Early Stopping: Test setinde hata artmaya başlarsa eğitimi durdur.
+eval_set = [(X_train, y_train), (X_test, y_test)]
+best_model.fit(
+    X_train, y_train,
+    eval_set=eval_set,
+    verbose=False  # Her satırı yazdırmasın
+)
 
 
 
+# -----------------------------------------------------------------------------
+# 6. TAHMİN VE PERFORMANS ÖLÇÜMÜ (METRICS)
+# -----------------------------------------------------------------------------
+y_pred = best_model.predict(X_test)
 
+# Negatif tahminleri engelle (Fiyat eksi olamaz - istisnalar hariç)
+y_pred = np.maximum(y_pred, 0)
+
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+
+# MAPE Hesaplama (Sıfıra bölme hatasını engellemek için)
+mask = y_test != 0
+mape = (np.abs((y_test - y_pred) / y_test)[mask]).mean() * 100
+
+print("\n" + "="*30)
+print("📊 FİNAL MODEL SONUÇLARI")
+print("="*30)
+print(f"✅ Model RMSE: {rmse:.2f} TL (Hedef: < {naive_rmse:.2f})")
+print(f"✅ Model MAE:  {mae:.2f} TL")
+print(f"✅ Model MAPE: %{mape:.2f}")
+
+improvement = ((naive_rmse - rmse) / naive_rmse) * 100
+print(f"🚀 Naive Modele Göre İyileşme: %{improvement:.2f}")
+
+
+
+# -----------------------------------------------------------------------------
+# 7. GÖRSELLEŞTİRME (VISUALIZATION)
+# -----------------------------------------------------------------------------
+# Tahminleri DataFrame yapalım (Tarih indeksiyle)
+df_pred = pd.DataFrame({'Gerçek': y_test, 'Tahmin': y_pred}, index=dates_test)
+
+# Son 1 Haftayı (168 saat) Yakından Görelim
+last_week = df_pred.iloc[-168:]
+
+plt.figure(figsize=(15, 6))
+plt.plot(last_week.index, last_week['Gerçek'], label='Gerçek Fiyat (PTF)', color='blue', linewidth=2)
+plt.plot(last_week.index, last_week['Tahmin'], label='XGBoost Tahmini', color='red', linestyle='--', linewidth=2)
+plt.title('Son 1 Hafta: Gerçek vs Tahmin (Zoom In)', fontsize=14)
+plt.ylabel('PTF (TL/MWH)')
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.show()
+
+# Özellik Önem Düzeyi (Feature Importance)
+plt.figure(figsize=(10, 8))
+# En önemli 20 özelliği çizdir
+sorted_idx = best_model.feature_importances_.argsort()[-20:]
+plt.barh(X.columns[sorted_idx], best_model.feature_importances_[sorted_idx])
+plt.title("XGBoost: En Önemli Değişkenler (Feature Importance)")
+plt.xlabel("Önem Düzeyi")
+plt.show()

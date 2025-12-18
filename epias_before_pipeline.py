@@ -14,6 +14,8 @@ import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 import pandas as pd
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
 # ---------------------------
 # AYARLAR
@@ -253,6 +255,10 @@ df_final['PTF (TL/MWH)'].describe().T
 sayi = (df_final['PTF (TL/MWH)'] == 99999.000).sum()
 print(f"99999.000 değeri {sayi} kez geçiyor.")
 
+#------------------------------------------------------------------------------------------------------------
+# İSTATİKSEL TESTLER
+#------------------------------------------------------------------------------------------------------------
+
 #---------------------------
 # NORMALLİK TESTİ
 #---------------------------
@@ -284,6 +290,11 @@ plt.show()
 print(f"Skewness (Çarpıklık): {df_final['PTF (TL/MWH)'].skew()}")
 print(f"Kurtosis (Basıklık): {df_final['PTF (TL/MWH)'].kurt()}")
 
+
+#---------------------------
+# DURAĞANLIK TESTİ
+#---------------------------
+
 # ADF Testini çalıştır
 # autolag='AIC' parametresi en iyi gecikme (lag) sayısını otomatik seçer
 adf_test = adfuller(df_final['PTF (TL/MWH)'].dropna(), autolag='AIC')
@@ -305,6 +316,7 @@ independent_cols = [col for col in df_final.columns if
 
 adf_results = []
 
+
 for col in independent_cols:
     # NaN değerleri temizleyerek testi çalıştır
     series = df_final[col].dropna()
@@ -325,8 +337,6 @@ adf_df = pd.DataFrame(adf_results)
 print(adf_df)
 
 
-
-
 # Durağan olmayan ve sınırda olan değişkenleri görselleştirelim
 cols_to_plot = ['Dolar_Kuru', 'dogalgaz_fiyatlari_Mwh', 'Akarsu', 'Jeotermal']
 
@@ -342,7 +352,9 @@ plt.tight_layout()
 plt.show()
 
 
-
+#---------------------------
+# VOLALİTE
+#---------------------------
 
 # 1. Grup: Fiyat ve Maliyet Volatilitesi (PTF, Dolar, Gaz Fiyatı)
 # Not: Doların ham fiyatı trend izlese de, volatilitesi ekonomik risk dönemlerini gösterir.
@@ -370,7 +382,9 @@ plot_grouped_volatility(df_final, fosil_cols, "Fosil Yakıt Üretim Volatilitesi
 plot_grouped_volatility(df_final, yenilenebilir_cols, "Yenilenebilir Enerji Üretim Volatilitesi")
 
 
-
+#---------------------------
+# KORELASYON
+#---------------------------
 
 # 1. Sayısal sütunları seçelim
 numerical_cols = df_final.select_dtypes(include=[np.number]).columns
@@ -389,7 +403,9 @@ plt.show()
 
 
 
-
+#---------------------------
+# ÇOKLU BAĞLANTI (VIF)
+#---------------------------
 
 # 1. Sadece bağımsız değişkenleri seçelim (Bağımlı değişken PTF ve Tarih hariç)
 X = df_final.drop(['PTF (TL/MWH)'], axis=1).select_dtypes(include=[np.number])
@@ -446,14 +462,183 @@ print("Fark Alma (Differencing) Sonrası VIF Değerleri:")
 print(vif_diff.sort_values(by="VIF", ascending=False))
 
 
+#------------------------------------------------------------------------------------------------------------
+# ZAMAN SERİSİ ANALİZİ
+#------------------------------------------------------------------------------------------------------------
+
+#---------------------------
+# MEVSİMSELLİK
+#---------------------------
+
+# PTF verisini 24 saatlik periyotla (günlük döngü) ayrıştıralım
+# Not: Veri setinde tarih indeksi olduğundan emin olmalısın
+result = seasonal_decompose(df_final['PTF (TL/MWH)'], model='additive', period=24)
+
+
+# Grafik ayarları
+plt.rcParams['figure.figsize'] = (14, 12)
+result.plot()
+plt.suptitle('PTF (TL/MWH) 24 Saatlik Mevsimsel Ayrıştırma', fontsize=16, y=1.02)
+plt.show()
+
+result_short = seasonal_decompose(df_final['PTF (TL/MWH)'].tail(500), model='additive', period=24)
+result_short.plot()
+plt.show()
+
+result_short = seasonal_decompose(df_final['PTF (TL/MWH)'].tail(500), model='additive', period=168)
+result_short.plot()
+plt.show()
+
+
+#---------------------------
+# ACF PACF
+#---------------------------
+
+
+# 1. Veriyi hazırla (NaN değerleri temizle)
+ptf_series = df_final['PTF (TL/MWH)'].dropna()
+
+fig, axes = plt.subplots(2, 1, figsize=(15, 12))
+
+# 2. ACF Çizimi
+plot_acf(ptf_series, lags=48, ax=axes[0])
+axes[0].set_title('PTF ACF (48 Saatlik Gecikme)')
+
+# 3. PACF Çizimi (Metod 'yw' olarak güncellendi)
+plot_pacf(ptf_series, lags=48, ax=axes[1], method='yw')
+axes[1].set_title('PTF PACF (48 Saatlik Gecikme)')
+
+plt.tight_layout()
+plt.show()
+
+
+ptf_series = df_final['PTF (TL/MWH)'].dropna()
+
+fig, axes = plt.subplots(2, 1, figsize=(15, 12))
+
+# 2. ACF Çizimi
+plot_acf(ptf_series, lags=170, ax=axes[0])
+axes[0].set_title('PTF ACF (168  Saatlik Gecikme)')
+
+# 3. PACF Çizimi (Metod 'yw' olarak güncellendi)
+plot_pacf(ptf_series, lags=170, ax=axes[1], method='yw')
+axes[1].set_title('PTF PACF (168 Saatlik Gecikme)')
+
+plt.tight_layout()
+plt.show()
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from statsmodels.tsa.stattools import ccf
+
+# Örn: Rüzgar Üretimi ile PTF arasındaki gecikmeli ilişki
+# Rüzgar arttıktan kaç saat sonra fiyat düşüyor?
+target = df_final['PTF (TL/MWH)'].dropna()
+feature = df_final['Rüzgar'].dropna() # Sütun adını kendi df'ine göre güncelle
+
+# Cross-correlation hesapla (ilk 24 saat için)
+cross_corr = [target.corr(feature.shift(lag)) for lag in range(25)]
+
+plt.figure(figsize=(10, 5))
+plt.bar(range(25), cross_corr)
+plt.title('Rüzgar Üretimi ve PTF Çapraz Korelasyonu (Lags)')
+plt.xlabel('Gecikme (Saat)')
+plt.ylabel('Korelasyon Katsayısı')
+plt.show()
 
 
 
 
+# 24 saatlik hareketli ortalama ve standart sapma
+rolling_mean = df_final['PTF (TL/MWH)'].rolling(window=24).mean()
+rolling_std = df_final['PTF (TL/MWH)'].rolling(window=24).std()
 
+plt.figure(figsize=(14, 7))
+plt.plot(df_final['PTF (TL/MWH)'], label='Orijinal PTF', alpha=0.3)
+plt.plot(rolling_mean, label='24s Hareketli Ortalama', color='red')
+plt.plot(rolling_std, label='24s Hareketli Oynaklık (Std)', color='black')
+plt.title('PTF Hareketli İstatistik Analizi')
+plt.legend()
+plt.show()
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 
+# 1. Veriyi kopyala
+df_heatmap = df_final.copy()
 
+# 2. Sütun İsimlerini Kontrol Et (Debug için)
+print("Sütunlar:", df_heatmap.columns.tolist())
 
+# --- SAAT BİLGİSİNİ DÜZELTME OPERASYONU ---
 
+# Senaryo A: Veride 'Saat' isminde ayrı bir sütun varsa onu kullan
+# (Genelde string "00:00" veya integer 0,1,2.. formatında olabilir)
+col_names = [c.lower() for c in df_heatmap.columns]
 
+if 'saat' in col_names:
+    # Gerçek sütun adını bul (Büyük/küçük harf duyarlı)
+    saat_col = df_heatmap.columns[col_names.index('saat')]
+    print(f"✅ 'Saat' sütunu bulundu: {saat_col}")
+
+    # Eğer saat "00:00" formatındaysa sadece saati al, sayıysa direkt al
+    try:
+        df_heatmap['Hour'] = df_heatmap[saat_col].astype(str).str.split(':').str[0].astype(int)
+    except:
+        df_heatmap['Hour'] = df_heatmap[saat_col].astype(int)
+
+# Senaryo B: Saat sütunu yoksa, İndeks veya Tarih sütunundan çekmeyi dene
+else:
+    print("⚠️ 'Saat' sütunu bulunamadı, Tarih sütunundan çekiliyor...")
+    if 'Tarih' not in df_heatmap.columns:
+        df_heatmap = df_heatmap.reset_index()
+
+    # Tarih sütununu datetime yap
+    date_col = df_heatmap.columns[0]  # İlk sütunu tarih varsayalım
+    df_heatmap[date_col] = pd.to_datetime(df_heatmap[date_col])
+
+    df_heatmap['Hour'] = df_heatmap[date_col].dt.hour
+
+# --- DİĞER ZAMAN BİLGİLERİ ---
+# Tarih sütunu (Month ve Day için)
+if 'Tarih' in df_heatmap.columns:
+    df_heatmap['Tarih'] = pd.to_datetime(df_heatmap['Tarih'])
+    df_heatmap['Month'] = df_heatmap['Tarih'].dt.month
+    df_heatmap['Day_of_Week'] = df_heatmap['Tarih'].dt.dayofweek
+else:
+    # Eğer reset_index yaptıysak
+    date_col = df_heatmap.columns[0]
+    df_heatmap[date_col] = pd.to_datetime(df_heatmap[date_col])
+    df_heatmap['Month'] = df_heatmap[date_col].dt.month
+    df_heatmap['Day_of_Week'] = df_heatmap[date_col].dt.dayofweek
+
+# --- KONTROL ---
+print(f"Benzersiz Saat Değerleri: {df_heatmap['Hour'].unique()}")
+# Eğer burada hala sadece [0] görüyorsan, veride saat bilgisi hiç yok demektir!
+
+# --- GRAFİKLERİ ÇİZ ---
+
+# 1. Isı Haritası
+pivot_table = df_heatmap.pivot_table(values='PTF (TL/MWH)', index='Hour', columns='Day_of_Week', aggfunc='mean')
+
+plt.figure(figsize=(12, 8))
+sns.heatmap(pivot_table, cmap='YlOrRd', annot=False)
+plt.title('DÜZELTİLMİŞ PTF Isı Haritası (Saat vs Gün)')
+plt.xlabel('Haftanın Günü (0=Pzt, 6=Pzr)')
+plt.ylabel('Günün Saati (0-23)')
+plt.show()
+
+# 2. Kutu Grafikleri
+fig, axes = plt.subplots(2, 1, figsize=(15, 12))
+
+sns.boxplot(x='Hour', y='PTF (TL/MWH)', data=df_heatmap, ax=axes[0], palette="viridis")
+axes[0].set_title('Saat Bazlı PTF Dağılımı (0-23 Arası Olmalı)')
+
+sns.boxplot(x='Month', y='PTF (TL/MWH)', data=df_heatmap, ax=axes[1], palette="magma")
+axes[1].set_title('Aylık PTF Dağılımı')
+
+plt.tight_layout()
+plt.show()

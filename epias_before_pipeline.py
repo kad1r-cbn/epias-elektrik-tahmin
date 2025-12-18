@@ -962,3 +962,5 @@ print(f"🎯 y Matrisi Boyutu: {y.shape}")
 
 
 
+
+

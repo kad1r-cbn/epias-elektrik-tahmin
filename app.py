@@ -1,5 +1,5 @@
 # =============================================================================
-# EPİAŞ ELEKTRİK PİYASASI TAHMİN ASİSTANI (STREAMLIT APP)
+# EPİAŞ AI TRADER PREMIUM - MARJİNAL & MİNİMALİST TASARIM
 # =============================================================================
 import streamlit as st
 import pandas as pd
@@ -8,211 +8,296 @@ import joblib
 import xgboost as xgb
 import os
 import datetime
+import holidays
+import plotly.graph_objects as go
+import plotly.express as px
 
 # -----------------------------------------------------------------------------
-# 1. SAYFA AYARLARI (GÖRSEL MAKYAJ)
+# 1. PREMIUM SAYFA AYARLARI
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="EPİAŞ AI Trader",
+    page_title="EPİAŞ PTF Tahmin Modeli",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"  # Sidebar'ı kapalı başlatıyoruz, daha clean
 )
 
-# Özel CSS (Daha profesyonel görünüm için)
+# Özel CSS (Marjinal Tasarım)
 st.markdown("""
-    <style>
-    .main {
-        background-color: #f5f5f5;
+<style>
+    /* Ana Arka Plan */
+    .stApp {
+        background-color: #0E1117;
+        color: #E0E0E0;
     }
-    .stButton>button {
-        width: 100%;
-        background-color: #FF4B4B;
-        color: white;
-        font-weight: bold;
-    }
-    .metric-card {
-        background-color: white;
+    /* Metrik Kartları */
+    div[data-testid="metric-container"] {
+        background-color: #1E212B;
+        border: 1px solid #333;
         padding: 20px;
-        border-radius: 10px;
-        box_shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border-radius: 15px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        transition: transform 0.2s;
     }
-    </style>
-    """, unsafe_allow_html=True)
+    div[data-testid="metric-container"]:hover {
+        transform: scale(1.02);
+        border-color: #00D4FF;
+    }
+    /* Başlıklar */
+    h1, h2, h3 {
+        color: #FAFAFA !important;
+        font-family: 'Helvetica Neue', sans-serif;
+    }
+    /* Buton */
+    .stButton>button {
+        background: linear-gradient(90deg, #00C6FF 0%, #0072FF 100%);
+        color: white;
+        border: none;
+        border-radius: 25px;
+        height: 50px;
+        font-weight: bold;
+        font-size: 18px;
+        width: 100%;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        box-shadow: 0 0 15px #0072FF;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
-# 2. MODELİ YÜKLEME (CACHE MEKANİZMASI)
+# 2. DATA LOAD & ENGINE (GİZLİ KAHRAMAN)
 # -----------------------------------------------------------------------------
 @st.cache_resource
-def load_model():
+def load_engine():
     model_path = os.path.join('models', 'epias_model_final.pkl')
+    data_path = os.path.join('data_s', 'data_set_ex.xlsx')
+
     try:
-        package = joblib.load(model_path)
-        return package
-    except FileNotFoundError:
-        st.error("🚨 Model dosyası bulunamadı! Lütfen önce 'training.py' dosyasını çalıştırın.")
-        return None
+        model_pkg = joblib.load(model_path)
+        df = pd.read_excel(data_path)
 
+        # Hızlı temizlik
+        df.columns = [col.strip() for col in df.columns]
+        df['Tarih'] = pd.to_datetime(df['Tarih'], errors='coerce')
 
-# Modeli yükle
-model_package = load_model()
-
-if model_package:
-    model = model_package['model']
-    feature_list = model_package['features']
-
-    # Modelin içindeki best_params'ı al (eğer varsa)
-    best_params = model_package.get('best_params', {})
-else:
-    st.stop()  # Model yoksa uygulamayı durdur
-
-# -----------------------------------------------------------------------------
-# 3. YAN MENÜ (SIDEBAR) - GİRDİLER
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.image("https://www.epias.com.tr/wp-content/uploads/2019/06/epias-logo.png", width=200)
-    st.title("⚡ Parametre Paneli")
-    st.markdown("---")
-
-    # Tarih ve Saat Seçimi
-    secilen_tarih = st.date_input("Tahmin Tarihi", datetime.date.today() + datetime.timedelta(days=1))
-    secilen_saat = st.slider("Saat Seçimi (0-23)", 0, 23, 14)
-
-    st.markdown("### 🏭 Piyasa Koşulları")
-
-    # Kullanıcıdan Girdiler (Varsayılan değerler ortalama değerlerdir)
-    yuk_tahmini = st.number_input("Yük Tahmini (MWh)", min_value=10000, max_value=60000, value=35000, step=500)
-
-    st.markdown("### 🔋 Üretim Senaryosu (MW)")
-    ruzgar = st.number_input("Rüzgar Üretimi", 0, 15000, 3000)
-    gunes = st.number_input("Güneş Üretimi", 0, 15000, 0 if secilen_saat > 18 or secilen_saat < 6 else 2000)
-    dogalgaz = st.number_input("Doğalgaz Üretimi", 0, 15000, 8000)
-
-    # Diğerleri (Ortalama varsayılanlar)
-    ithal_komur = st.sidebar.number_input("İthal Kömür (Opsiyonel)", 0, 10000, 5000)
-    linyit = st.sidebar.number_input("Linyit (Opsiyonel)", 0, 10000, 4000)
-
-    # Geçmiş Fiyat Bilgisi (Lag için)
-    st.markdown("### 💰 Geçmiş Fiyatlar")
-    ptf_dun = st.number_input("Dünkü Aynı Saat Fiyatı (PTF)", 0, 5000, 2000)
-    ptf_hafta = st.number_input("Geçen Hafta Aynı Saat Fiyatı", 0, 5000, 1900)
-
-    # Tahmin Butonu
-    predict_btn = st.button("FİYAT TAHMİN ET 🚀")
-
-# -----------------------------------------------------------------------------
-# 4. ANA EKRAN (DASHBOARD)
-# -----------------------------------------------------------------------------
-st.title("💡 EPİAŞ Elektrik Fiyat Tahmin Modeli")
-st.markdown(f"**Seçilen Tarih:** {secilen_tarih.strftime('%d %B %Y')} | **Saat:** {secilen_saat}:00")
-
-# Sekmeler
-tab1, tab2 = st.tabs(["📊 Tahmin & Simülasyon", "🧠 Model Analitiği"])
-
-with tab1:
-    if predict_btn:
-        # --- FEATURE ENGINEERING (CANLI) ---
-        # Kullanıcının girdiği verileri modelin anlayacağı dile çeviriyoruz.
-
-        # Tarihsel Özellikler
-        tarih_dt = pd.to_datetime(f"{secilen_tarih} {secilen_saat}:00:00")
-
-        # DataFrame Oluştur (Tek satırlık)
-        input_data = pd.DataFrame([0], columns=['dummy'])  # Geçici
-
-        # Sniper Değişkenleri Hesapla
-        # 1. Döngüsel Zaman
-        input_data['Hour_Sin'] = np.sin(2 * np.pi * secilen_saat / 24)
-        input_data['Hour_Cos'] = np.cos(2 * np.pi * secilen_saat / 24)
-        input_data['Day_Sin'] = np.sin(2 * np.pi * tarih_dt.dayofweek / 7)
-        input_data['Day_Cos'] = np.cos(2 * np.pi * tarih_dt.dayofweek / 7)
-        input_data['Is_Weekend'] = 1 if tarih_dt.dayofweek in [5, 6] else 0
-
-        # 2. Lag Değişkenleri (Kullanıcıdan aldık)
-        input_data['PTF_Lag_24'] = ptf_dun
-        input_data['PTF_Lag_168'] = ptf_hafta
-
-        # 3. Sniper Özellikler
-        # Relative Price (Ortalama yerine basitçe dünkü fiyatı baz alıyoruz canlıda)
-        roll_mean_proxy = (ptf_dun + ptf_hafta) / 2  # Canlıda 168 saat geriye gidemeyeceğimiz için proxy kullanıyoruz
-        input_data['PTF_Roll_Mean_168'] = roll_mean_proxy
-        input_data['Relative_Price_Pos'] = (ptf_dun - roll_mean_proxy) / (roll_mean_proxy + 1)
-
-        # Net Load
-        total_ren = ruzgar + gunes  # Basit yenilenebilir
-        input_data['Total_Renewable_Lag24'] = total_ren
-        input_data['Net_Load'] = yuk_tahmini - total_ren
-
-        # Thermal Stress
-        total_therm = dogalgaz + ithal_komur + linyit
-        input_data['Total_Thermal_Lag24'] = total_therm
-        input_data['Thermal_Stress'] = total_therm / (yuk_tahmini + 1)
-
-        # Momentum & Volatility
-        input_data['Price_Momentum'] = ptf_dun - ptf_hafta
-        input_data['Volatility'] = 50  # Varsayılan (Canlıda hesaplamak zor)
-
-        # Diğer Shift Edilmiş Kolonlar (Model 24 saat öncesini istiyor)
-        input_data['Doğalgaz_Lag24'] = dogalgaz
-        input_data['Rüzgar_Lag24'] = ruzgar
-        input_data['Güneş_Lag24'] = gunes
-        # ... diğerlerini 0 veya varsayılan geçebiliriz (Eksik özellik hatası almamak için)
-
-        # Modelin beklediği tüm sütunları tamamla
-        for col in feature_list:
-            if col not in input_data.columns:
-                input_data[col] = 0  # Bilinmeyenleri 0 kabul et (Güvenli Liman)
-
-        # Sıralamayı Garantiye Al
-        input_data = input_data[feature_list]
-
-        # TAHMİN
-        prediction = model.predict(input_data)[0]
-        prediction = max(0, prediction)
-
-        # --- SONUÇ GÖSTERİMİ ---
-        st.success("✅ Tahmin Başarıyla Oluşturuldu!")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric(label="Tahmini PTF Fiyatı", value=f"{prediction:.2f} TL",
-                      delta=f"{prediction - ptf_dun:.2f} TL (Düne Göre)")
-
-        with col2:
-            st.metric(label="Net Yük (Talebin Gücü)", value=f"{input_data['Net_Load'].iloc[0]:,.0f} MWh")
-
-        with col3:
-            stress = input_data['Thermal_Stress'].iloc[0]
-            st.metric(label="Termik Stres Oranı", value=f"%{stress * 100:.1f}", delta_color="inverse")
-
-        # Görsel Yorum
-        st.markdown("### 🤖 Yapay Zeka Yorumu:")
-        if prediction > 2500:
-            st.warning("⚠️ **Yüksek Fiyat Uyarısı:** Sistemde stres yüksek. Gaz santralleri devrede olabilir.")
-        elif prediction < 1500:
-            st.info("📉 **Düşük Fiyat Beklentisi:** Yenilenebilir enerji (Rüzgar/Güneş) piyasayı rahatlatıyor.")
+        # Saat düzeltme
+        if 'Saat' in df.columns:
+            if df['Saat'].dtype == 'O':
+                df['Saat_Int'] = df['Saat'].astype(str).str.split(':').str[0].astype(int)
+            else:
+                df['Saat_Int'] = df['Saat']
         else:
-            st.write("✅ **Normal Piyasa Koşulları:** Fiyatlar beklenen dengede seyrediyor.")
+            df['Saat_Int'] = df['Tarih'].dt.hour
 
+        # Para birimi temizliği
+        for col in ['PTF (TL/MWH)', 'Yük Tahmin Planı (MWh)']:
+            if col in df.columns and df[col].dtype == 'O':
+                df[col] = df[col].apply(
+                    lambda x: float(str(x).replace('.', '').replace(',', '.')) if isinstance(x, str) else x)
+
+        return model_pkg, df
+    except Exception as e:
+        return None, None
+
+
+model_package, df_history = load_engine()
+
+if not model_package:
+    st.error("Sistem Yüklenemedi! Lütfen training.py dosyasını çalıştırın.")
+    st.stop()
+
+model = model_package['model']
+feature_list = model_package['features']
+
+
+# Otomatik Veri Çekici
+def get_auto_data(tarih, saat):
+    # Veri setinde ara
+    mask = (df_history['Tarih'] == pd.to_datetime(tarih)) & (df_history['Saat_Int'] == saat)
+    row = df_history[mask]
+
+    if not row.empty:
+        d = row.iloc[0]
+        return d
     else:
-        st.info("👈 Tahmin sonucunu görmek için yandaki 'FİYAT TAHMİN ET' butonuna basınız.")
-        st.image(
-            "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80",
-            caption="Enerji Piyasaları", use_column_width=True)
+        # Yoksa ortalama al
+        m = pd.to_datetime(tarih).month
+        mask_m = (df_history['Tarih'].dt.month == m) & (df_history['Saat_Int'] == saat)
+        return df_history[mask_m].mean(numeric_only=True)
 
-with tab2:
-    st.header("Model Performansı ve İstatistikler")
 
-    # Modelden gelen istatistikleri göster (Eğer kaydettiysek)
-    if 'best_params' in model_package:
-        st.json(model_package['best_params'])
-    else:
-        st.write("Model parametreleri bulunamadı.")
+def get_lag_prices(tarih, saat):
+    # Basitleştirilmiş Lag bulucu
+    try:
+        dt = pd.to_datetime(tarih)
+        d_prev = dt - datetime.timedelta(days=1)
+        w_prev = dt - datetime.timedelta(days=7)
 
+        mask_d = (df_history['Tarih'] == d_prev) & (df_history['Saat_Int'] == saat)
+        mask_w = (df_history['Tarih'] == w_prev) & (df_history['Saat_Int'] == saat)
+
+        p_24 = df_history[mask_d]['PTF (TL/MWH)'].values[0] if not df_history[mask_d].empty else 2000
+        p_168 = df_history[mask_w]['PTF (TL/MWH)'].values[0] if not df_history[mask_w].empty else 2000
+        return p_24, p_168
+    except:
+        return 2000, 2000
+
+
+# -----------------------------------------------------------------------------
+# 3. MİNİMALİST ARAYÜZ (GİRİŞ KISMI)
+# -----------------------------------------------------------------------------
+col_logo, col_title = st.columns([1, 5])
+with col_logo:
+    st.image(
+        "foto/epias.jpg",
+        width=80)
+with col_title:
+    st.title("EPİAŞ INTELLIGENCE")
+    st.caption("AI Powered Energy Market Forecasting")
+
+st.markdown("---")
+
+# Seçim Alanı (Tek satırda basit seçim)
+c1, c2, c3 = st.columns([2, 2, 2])
+with c1:
+    secilen_tarih = st.date_input("Analiz Tarihi", datetime.date.today())
+with c2:
+    secilen_saat = st.selectbox("Saat Dilimi", list(range(24)), index=14)
+with c3:
+    st.write("")  # Boşluk
+    st.write("")
+    btn_predict = st.button("ANALİZİ BAŞLAT")
+
+# -----------------------------------------------------------------------------
+# 4. TAHMİN MOTORU VE GÖRSELLEŞTİRME
+# -----------------------------------------------------------------------------
+if btn_predict:
+    # Verileri Arkada Topla (Kullanıcı Görmez)
+    raw_data = get_auto_data(secilen_tarih, secilen_saat)
+    lag_24, lag_168 = get_lag_prices(secilen_tarih, secilen_saat)
+
+    # Model Input Hazırla
+    input_df = pd.DataFrame([0], columns=['dummy'])
+
+    # Tarihsel Dönüşümler
+    dt = pd.to_datetime(f"{secilen_tarih} {secilen_saat}:00:00")
+    input_df['Hour_Sin'] = np.sin(2 * np.pi * secilen_saat / 24)
+    input_df['Hour_Cos'] = np.cos(2 * np.pi * secilen_saat / 24)
+    input_df['Day_Sin'] = np.sin(2 * np.pi * dt.dayofweek / 7)
+    input_df['Day_Cos'] = np.cos(2 * np.pi * dt.dayofweek / 7)
+    input_df['Is_Weekend'] = 1 if dt.dayofweek >= 5 else 0
+    input_df['Is_Holiday'] = 1 if dt in holidays.TR() else 0
+
+    # Lag & Feature Engineering
+    input_df['PTF_Lag_24'] = lag_24
+    input_df['PTF_Lag_168'] = lag_168
+    rm = (lag_24 + lag_168) / 2
+    input_df['PTF_Roll_Mean_24'] = lag_24
+    input_df['PTF_Roll_Mean_168'] = rm
+    input_df['PTF_Roll_Std_24'] = 50
+    input_df['Relative_Price_Pos'] = (lag_24 - rm) / (rm + 1)
+    input_df['Price_Momentum'] = lag_24 - lag_168
+
+    # Üretim Verileri (Otomatik Gelenler)
+    # Eğer veri yoksa varsayılan ata
+    yuk = raw_data.get('Yük Tahmin Planı (MWh)', 35000) if raw_data is not None else 35000
+    ruzgar = raw_data.get('Rüzgar', 3000) if raw_data is not None else 3000
+    gunes = raw_data.get('Güneş', 0) if raw_data is not None else 0
+    dogalgaz = raw_data.get('Doğalgaz', 8000) if raw_data is not None else 8000
+    komur = raw_data.get('İthal Kömür', 5000) if raw_data is not None else 5000
+
+    ren = ruzgar + gunes
+    input_df['Total_Renewable_Lag24'] = ren
+    input_df['Net_Load'] = yuk - ren
+    therm = dogalgaz + komur
+    input_df['Total_Thermal_Lag24'] = therm
+    input_df['Thermal_Stress'] = therm / (yuk + 1)
+
+    # Shifted Columns
+    input_df['Doğalgaz_Lag24'] = dogalgaz
+    input_df['Rüzgar_Lag24'] = ruzgar
+    input_df['Güneş_Lag24'] = gunes
+    input_df['İthal Kömür_Lag24'] = komur
+
+    # Eksikleri 0 yap
+    for c in feature_list:
+        if c not in input_df.columns: input_df[c] = 0
+
+    # TAHMİN
+    pred = model.predict(input_df[feature_list])[0]
+    pred = max(0, pred)
+
+    # =========================================================================
+    # GÖRSEL ŞÖLEN (MODERN TASARIM)
+    # =========================================================================
+
+    st.markdown("### 📊 Piyasa Özeti")
+
+    # 1. BÜYÜK KARTLAR (METRICS)
+    m1, m2, m3, m4 = st.columns(4)
+
+    m1.metric("Tahmini Fiyat (PTF)", f"{pred:,.2f} ₺", delta=f"{pred - lag_24:.1f} ₺ (Düne Göre)")
+    m2.metric("Sistem Yükü", f"{yuk:,.0f} MWh", delta="Talep Durumu", delta_color="off")
+    m3.metric("Yenilenebilir Enerji", f"{ren:,.0f} MWh", f"%{(ren / yuk) * 100:.1f} Pay")
+    m4.metric("Risk Skoru (Volatilite)", "Düşük" if pred < 2000 else "Yüksek", delta_color="inverse")
+
+    st.write("")
+    st.write("")
+
+    # 2. HIZ GÖSTERGESİ (GAUGE CHART) - Herkesin Anlayacağı Grafik
+    # Fiyatın ucuz mu pahalı mı olduğunu gösterir
+
+    fig_gauge = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=pred,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': "Fiyat Basınç Göstergesi", 'font': {'size': 24, 'color': "white"}},
+        number={'suffix': " TL", 'font': {'color': "white"}},
+        gauge={
+            'axis': {'range': [0, 4000], 'tickwidth': 1, 'tickcolor': "white"},
+            'bar': {'color': "#00D4FF"},
+            'bgcolor': "black",
+            'borderwidth': 2,
+            'bordercolor': "gray",
+            'steps': [
+                {'range': [0, 1500], 'color': '#00ff00'},  # Ucuz (Yeşil)
+                {'range': [1500, 2500], 'color': '#ffff00'},  # Normal (Sarı)
+                {'range': [2500, 4000], 'color': '#ff0000'}],  # Pahalı (Kırmızı)
+            'threshold': {
+                'line': {'color': "white", 'width': 4},
+                'thickness': 0.75,
+                'value': pred}}))
+
+    fig_gauge.update_layout(paper_bgcolor="rgba(0,0,0,0)", font={'color': "white"})
+
+    # 3. PASTA GRAFİK (ENERJİ KAYNAKLARI) - Basit ve Renkli
+    labels = ['Rüzgar', 'Güneş', 'Doğalgaz', 'Kömür', 'Diğer']
+    values = [ruzgar, gunes, dogalgaz, komur, max(0, yuk - (ruzgar + gunes + dogalgaz + komur))]
+
+    fig_pie = px.pie(names=labels, values=values, title='Enerji Üretim Dağılımı', hole=0.5,
+                     color_discrete_sequence=px.colors.sequential.RdBu)
+    fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", font={'color': "white"}, showlegend=True)
+
+    # Grafikleri Yan Yana Koy
+    g1, g2 = st.columns([1, 1])
+    with g1:
+        st.plotly_chart(fig_gauge, use_container_width=True)
+    with g2:
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    # 4. YORUM KARTI (ALGORİTMA KONUŞUYOR)
+    st.info(f"💡 **AI Analizi:** Sistem yükünün %{(ren / yuk) * 100:.1f}'si yenilenebilir kaynaklardan karşılanıyor. "
+            f"Fiyatlar {'beklenen seviyenin altında' if pred < 2200 else 'yüksek seyrediyor'}. "
+            f"Termik santraller {'baskı altında' if therm / yuk > 0.5 else 'rahat çalışıyor'}.")
+
+else:
+    # Başlangıçta boş durmasın diye havalı bir placeholder
     st.markdown("""
-    **Model Mimarisi:** XGBoost Regressor  
-    **Özellik Mühendisliği:** Sniper Features (Net Load, Thermal Stress, Relative Price)  
-    **Validasyon:** Time Series Split (Ekim Train / Kasım Test)
-    """)
+    <div style='text-align: center; color: gray; padding: 50px;'>
+        <h2>Hazır olduğunda "ANALİZİ BAŞLAT" butonuna bas.</h2>
+        <p>Yapay zeka motoru EPİAŞ verilerini taramak için bekliyor...</p>
+    </div>
+    """, unsafe_allow_html=True)

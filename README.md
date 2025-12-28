@@ -39,11 +39,11 @@ Test veri seti üzerinde elde edilen model performansı aşağıdadır:
 
 | Metrik | Değer |
 | :--- | :--- |
-| **RMSE** | **XXX.XX TL** (Burayı doldur) |
-| **MAE** | **XXX.XX TL** (Burayı doldur) |
-| **R² Score** | **0.XX** (Burayı doldur) |
+| **RMSE** | **459.02 TL** |
+| **MAE** | **%20.26**  |
+| **İyileşme Oranı** | **%27.88**  |
 
-> **Analiz:** Model, özellikle volatilite'nin düşük olduğu saatlerde %95+ doğrulukla tahmin yapabilmektedir. (Buraya kendi yorumunu ekle).
+> **Analiz:** Model, özellikle volatilite'nin düşük olduğu saatlerde %95+ doğrulukla tahmin yapabilmektedir. 
 
 ### 📈 Tahmin vs Gerçekleşen (Actual vs Predicted)
 *(Buraya projenin çıktısı olan bir grafiğin ekran görüntüsünü -screenshot- koymalısın. Görselsiz README olmaz. `![Graph](gorsel_linki.png)` formatında ekle)*
@@ -54,7 +54,7 @@ Projeyi lokalinizde çalıştırmak için:
 
 1.  Repoyu klonlayın:
     ```bash
-    git clone [https://github.com/Miuul-Group-X/epias-elektrik-tahmin.git](https://github.com/Miuul-Group-X/epias-elektrik-tahmin.git)
+    git clone [https://github.com/WDG-DS/epias-elektrik-tahmin.git](https://github.com/WDG-DS/epias-elektrik-tahmin.git)
     ```
 2.  Gerekli kütüphaneleri yükleyin:
     ```bash
@@ -66,8 +66,10 @@ Projeyi lokalinizde çalıştırmak için:
     ```
 
 ## 👥 Takım
-* [Kadir (Kral)](https://github.com/kad1r-cbn)
-* [Arkadaşının Adı](https://github.com/arkadasin)
+* [Kadir](https://github.com/kad1r-cbn)
+* [Abdullah Gönül ](https://github.com/apognl)
+* [Bilgi Gülçin Sönmez ](https://github.com/bilgigulcinsonmez-dev)
+* [Züleyha Erdoğan ](https://github.com/zuleyha-erdogan)
 
 ---
 *Bu proje Miuul Data Science Bootcamp kapsamında geliştirilmiştir.*
